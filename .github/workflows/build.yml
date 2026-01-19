@@ -1,70 +1,99 @@
-name: Build Android APK Final Fix
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-env:
-  PYTHON_VERSION: '3.10'
-  # رفع نسخة فلاتر لضمان التوافق وتجنب طلب التحميل اليدوي
-  FLUTTER_VERSION: '3.22.0' 
-  ORG_NAME: "com.yourdomain.app"
-  PROJECT_NAME: "flet_app"
-
-jobs:
-  build-apk:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Install & Fix Python Dependencies
+      - name: Verify APK Output
         run: |
-          python -m pip install --upgrade pip
-          pip install flet
-          # حل مشكلة 'lask' وتجاهل الأخطاء البسيطة في التحميل
-          if [ -f requirements.txt ]; then
-            sed -i 's/lask/flask/g' requirements.txt
-            pip install -r requirements.txt || echo "Ignoring non-critical pip errors"
+          echo "🔎 التحقق من ملفات الإخراج..."
+          
+          APK_COUNT=$(find build/apk -name "*.apk" -type f 2>/dev/null | wc -l)
+          
+          if [ $APK_COUNT -gt 0 ]; then
+            echo "✅ تم إنشاء $APK_COUNT ملف APK"
+            echo "📄 قائمة ملفات APK:"
+            find build/apk -name "*.apk" -type f -exec ls -lh {} \;
+            
+            # عرض حجم الملفات
+            echo "📊 أحجام الملفات:"
+            for apk in build/apk/*.apk; do
+              if [ -f "$apk" ]; then
+                SIZE=$(stat -c%s "$apk")
+                SIZE_MB=$(echo "scale=2; $SIZE / (1024*1024)" | bc)
+                echo "   - $(basename $apk): ${SIZE_MB} MB"
+              fi
+            done
+          else
+            echo "❌ لم يتم إنشاء أي ملفات APK"
+            echo "📁 محتويات مجلد البناء:"
+            ls -la build/apk/ 2>/dev/null || echo "المجلد فارغ"
+            exit 1
           fi
 
-      - name: Install System Dependencies (Final Fix)
-        run: |
-          # تصحيح أسماء المكتبات لتناسب Ubuntu الحديث في GitHub Actions
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev mesa-utils libegl1-mesa
-
-      - name: Setup Java JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Flet Build APK (Anti-EOFError)
-        run: |
-          flutter config --no-analytics
-          # استخدام --yes وتحديد البيانات يدوياً يمنع التوقف التفاعلي
-          flet build apk --verbose --yes \
-            --org ${{ env.ORG_NAME }} \
-            --project ${{ env.PROJECT_NAME }} \
-            --build-number ${{ github.run_number }}
-
-      - name: Upload APK Artifact
+      - name: Archive Build Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: My-App-Release
-          path: build/apk/*.apk
+          name: App-APK-v${{ github.run_number }}
+          path: |
+            build/apk/*.apk
+            build/logs/
+            requirements.backup.txt
+          retention-days: 30
           if-no-files-found: error
+          compression-level: 9
+
+      - name: Create Build Report
+        if: always()
+        run: |
+          echo "📋 إنشاء تقرير البناء..."
+          
+          REPORT_FILE="build/build_report_${{ github.run_number }}.txt"
+          
+          cat > "$REPORT_FILE" << EOF
+          ===================================
+          تقرير بناء APK
+          ===================================
+          رقم التشغيل: ${{ github.run_number }}
+          التاريخ: $(date)
+          الفرع: ${{ github.ref }}
+          الالتزام: ${{ github.sha }}
+          
+          الإعدادات:
+          ----------
+          إصدار Python: ${{ env.PYTHON_VERSION }}
+          إصدار Flutter: ${{ env.FLUTTER_VERSION }}
+          نوع البناء: ${{ env.BUILD_TYPE }}
+          المؤسسة: ${{ env.ORG_NAME }}
+          المشروع: ${{ env.PROJECT_NAME }}
+          
+          النتائج:
+          --------
+          حالة البناء: ${{ job.status }}
+          EOF
+          
+          # إضافة معلومات الملفات
+          echo "" >> "$REPORT_FILE"
+          echo "ملفات APK المولدة:" >> "$REPORT_FILE"
+          find build/apk -name "*.apk" -exec basename {} \; 2>/dev/null >> "$REPORT_FILE" || echo "لا توجد ملفات" >> "$REPORT_FILE"
+          
+          echo "📤 تم إنشاء التقرير: $REPORT_FILE"
+
+      - name: Upload Build Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Report-v${{ github.run_number }}
+          path: build/build_report_*.txt
+          retention-days: 7
+          if-no-files-found: ignore
+          - name: Cleanup Temporary Files
+        if: always()
+        run: |
+          echo "🧹 تنظيف الملفات المؤقتة..."
+          rm -rf ~/.gradle/caches/ 2>/dev/null || true
+          rm -rf ~/.pub-cache/ 2>/dev/null || true
+          echo "✅ تم التنظيف"
+
+      - name: Display Build Status
+        if: always()
+        run: |
+          echo "📢 حالة البناء: ${{ job.status }}"
+          echo "🔗 رابط سجل البناء: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "🕒 وقت الانتهاء: $(date)"
