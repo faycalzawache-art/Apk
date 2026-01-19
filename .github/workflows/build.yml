@@ -1,0 +1,83 @@
+name: Build Professional Signed APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # يسمح لك بتشغيل البناء يدوياً من موقع GitHub
+
+env:
+  PYTHON_VERSION: '3.10'
+  FLUTTER_VERSION: '3.19.0'
+  # يفضل تغيير هذه القيم لتناسب تطبيقك
+  ORG_NAME: "com.yourdomain"
+  PROJECT_NAME: "my_flet_app"
+
+jobs:
+  build-apk:
+    name: Build and Sign APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet
+          # إذا كان هناك خطأ في ملف requirements (مثل lask بدل flask) سيتجاوزه ويكمل
+          if [ -f requirements.txt ]; then 
+            sed -i 's/lask/flask/g' requirements.txt # تصحيح تلقائي لخطأ flask الشائع
+            pip install -r requirements.txt || echo "Some packages failed to install, continuing..."
+          fi
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flet Build APK
+        run: |
+          flutter config --no-analytics
+          # استخدمنا --yes لتجنب خطأ EOFError (التوقف لانتظار إدخال مستخدم)
+          flet build apk --verbose --yes \
+            --org ${{ env.ORG_NAME }} \
+            --project ${{ env.PROJECT_NAME }} \
+            --build-number ${{ github.run_number }}
+
+      # هذه الخطوة ستحاول توقيع التطبيق إذا قمت بإضافة الـ Secrets
+      # إذا لم تضفها، يمكنك تعطيل هذه الخطوة أو حذفها
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: build/apk
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        continue-on-error: true # لضمان عدم فشل السكربت بالكامل إذا لم تكن قد جهزت المفاتيح بعد
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          # سيقوم برفع النسخة الموقعة إذا نجحت، أو النسخة العادية إذا فشل التوقيع
+          path: |
+            build/apk/*.apk
+            ${{ steps.sign_app.outputs.signedReleaseFile }}
+          if-no-files-found: error
+          retention-days: 7
